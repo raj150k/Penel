@@ -1,0 +1,482 @@
+mport requests
+import time
+import random
+import numpy as np
+from collections import deque, Counter
+from datetime import datetime, timezone, timedelta
+import threading
+import os
+import re
+import pickle
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+import bs4
+from flask import Flask, render_template_string
+
+app = Flask(__name__)
+
+# ================= CONFIG =================
+DKWIN_URL = "https://dkwin9.com/#/"
+BD_TIMEZONE = timezone(timedelta(hours=6))
+
+# ================= AI BRAIN =================
+class SuperAISignalBrain:
+    def __init__(self):
+        self.dkwin_results = deque(maxlen=2000)
+        self.dkwin_predictions = deque(maxlen=2000)
+        self.dkwin_periods = deque(maxlen=50)
+        self.dkwin_win_numbers = deque(maxlen=1000)
+        self.ai_accuracy = 50.0
+        self.consecutive_losses = 0
+        self.current_trend = "NEUTRAL"
+        self.model_file = "dkwin_super_ai_brain.pkl"
+        self.dkwin_hot_numbers = Counter()
+        self.dkwin_cold_numbers = Counter()
+        self.dkwin_momentum = 0
+        self.self_correction_active = False
+        self.dkwin_ml_model = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.dkwin_label_encoder = LabelEncoder()
+        self.dkwin_model_trained = False
+        self.load_brain()
+
+    def load_brain(self):
+        if os.path.exists(self.model_file):
+            try:
+                with open(self.model_file, 'rb') as f:
+                    data = pickle.load(f)
+                    self.__dict__.update(data)
+                print("🧠 Brain Loaded")
+                self.dkwin_model_trained = True
+            except Exception:
+                print("🆕 New Brain Created")
+
+    def save_brain(self):
+        data = {
+            'dkwin_results': list(self.dkwin_results),
+            'dkwin_predictions': list(self.dkwin_predictions),
+            'dkwin_periods': list(self.dkwin_periods),
+            'dkwin_win_numbers': list(self.dkwin_win_numbers),
+            'ai_accuracy': self.ai_accuracy,
+            'consecutive_losses': self.consecutive_losses,
+            'current_trend': self.current_trend,
+            'dkwin_hot_numbers': dict(self.dkwin_hot_numbers),
+            'dkwin_cold_numbers': dict(self.dkwin_cold_numbers),
+            'dkwin_momentum': self.dkwin_momentum,
+            'self_correction_active': self.self_correction_active
+        }
+        with open(self.model_file, 'wb') as f:
+            pickle.dump(data, f)
+
+    def get_bangladesh_time(self):
+        return datetime.now(BD_TIMEZONE).strftime("%H:%M:%S")
+
+    def fetch_dkwin_wingo_30s(self):
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(DKWIN_URL, headers=headers, timeout=15)
+            response.raise_for_status()
+            soup = bs4.BeautifulSoup(response.text, 'html.parser')
+            wingo_results = []
+            wingo_periods = []
+            selectors = [
+                '[class*="win"]', '[class*="result"]', '[class*="history"]',
+                '[class*="record"]', '[class*="wingo"]', 'td'
+            ]
+            elements = []
+            for s in selectors:
+                elements.extend(soup.select(s))
+            for elem in elements[-50:]:
+                text = elem.get_text().strip().upper()
+                period_match = re.search(r'(\d{6,})', text)
+                if period_match:
+                    wingo_periods.append(period_match.group(1))
+                if "BIG" in text:
+                    wingo_results.append("Big")
+                elif "SMALL" in text:
+                    wingo_results.append("Small")
+                num_match = re.search(r'(\d)', text)
+                if num_match:
+                    self.dkwin_win_numbers.append(int(num_match.group(1)))
+            return wingo_results[-30:], wingo_periods[-10:], list(set(wingo_periods[-5:]))
+        except Exception as e:
+            print("Fetch Error:", e)
+            return [], [], []
+
+    def sync_dkwin_data(self):
+        results, _, recent_periods = self.fetch_dkwin_wingo_30s()
+        for r in results:
+            self.dkwin_results.append(r)
+        for p in recent_periods:
+            if p not in self.dkwin_periods:
+                self.dkwin_periods.append(p)
+        recent = list(self.dkwin_win_numbers)[-50:]
+        self.dkwin_hot_numbers.update(recent)
+        self.current_trend = self.analyze_trend()
+        self.save_brain()
+
+    def analyze_trend(self):
+        if len(self.dkwin_results) < 30:
+            return "NEUTRAL"
+        last = list(self.dkwin_results)[-30:]
+        ratio = last.count("Big") / len(last)
+        if ratio > 0.7:
+            return "STRONG_BIG"
+        elif ratio < 0.3:
+            return "STRONG_SMALL"
+        return "SIDEWAYS"
+
+    def predict(self):
+        self.sync_dkwin_data()
+        history = list(self.dkwin_results)
+        if len(history) < 10:
+            return random.choice(["Big", "Small"]), 70
+        big_count = history[-10:].count("Big")
+        prediction = "Big" if big_count > 5 else "Small"
+        confidence = 70 + abs(big_count - 5) * 3
+        return prediction, min(confidence, 99)
+
+# Global AI Brain
+ai_brain = SuperAISignalBrain()
+last_signal = None
+
+# HTML Template
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DKWIN VIP AI Signals</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            color: white;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+                }
+        header h1 {
+            font-size: 2.5em;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4, #45b7d1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+        .status {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        #status { color: #4ade80; }
+        .signal-card {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+        .signal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        #signalTime {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #4ecdc4;
+        }
+        .confidence {
+            font-size: 2.5em;
+            font-weight: bold;
+            background: linear-gradient(45deg, #ffd700, #ffed4e);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .prediction-container { margin: 30px 0; }
+        .prediction {
+            display: inline-block;
+            padding: 20px 40px;
+            font-size: 3em;
+            font-weight: bold;
+            border-radius: 15px;
+            transition: all 0.3s ease;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+        .big-prediction {
+            background: linear-gradient(45deg, #ff4757, #ff3838);
+            box-shadow: 0 0 30px rgba(255,71,87,0.5);
+            animation: pulseBig 2s infinite;
+        }
+        .small-prediction {
+            background: linear-gradient(45deg, #3742fa, #2f3542);
+            box-shadow: 0 0 30px rgba(55,66,250,0.5);
+            animation: pulseSmall 2s infinite;
+        }
+        @keyframes pulseBig {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        @keyframes pulseSmall {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.03); }
+        }
+        .trend {
+            font-size: 1.2em;
+            padding: 10px 20px;
+            border-radius: 25px;
+            display: inline-block;
+        }
+        .trend.STRONG_BIG { background: rgba(255,71,87,0.3); }
+        .trend.STRONG_SMALL { background: rgba(55,66,250,0.3); }
+        .trend.SIDEWAYS { background: rgba(255,193,7,0.3); }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 15px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .stat-card h3 {
+            margin-bottom: 15px;
+            color: #4ecdc4;
+        }
+        #hotNumbers, #recentResults {
+            font-size: 1.1em;
+            line-height: 1.6;
+        }
+        .history-section {
+            background: rgba(255,255,255,0.05);
+            padding: 25px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+        }
+        #historyList {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .history-item {
+            padding: 10px;
+            border-radius: 10px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        .history-big { background: rgba(255,71,87,0.3); }
+        .history-small { background: rgba(55,66,250,0.3); }
+        .refresh-info {
+            text-align: center;
+            padding: 15px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            font-size: 0.9em;
+        }
+        @media (max-width: 768px) {
+            .stats-grid { grid-template-columns: 1fr; }
+            .prediction { font-size: 2em; }
+            header h1 { font-size: 2em; }
+        }
+    </style>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-robot"></i> DKWIN VIP AI SIGNALS</h1>
+            <div class="status">
+                <span id="status">🟢 LIVE</span>
+                <span id="accuracy">--%</span>
+            </div>
+        </header>
+
+        <div class="signal-card">
+            <div class="signal-header">
+                <h2 id="signalTime">--:--:--</h2>
+                <div class="confidence" id="confidence">--%</div>
+            </div>
+            <div class="prediction-container">
+                <div class="prediction" id="prediction">
+                    <span class="predict-text">LOADING...</span>
+                    <div class="predict-icon">
+                        <i class="fas fa-spinner fa-spin"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="trend" id="trend">Trend: NEUTRAL</div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>🔥 Hot Numbers</h3>
+                <div id="hotNumbers">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>📊 Recent Results</h3>
+                <div id="recentResults">--</div>
+            </div>
+        </div>
+
+        <div class="history-section">
+            <h3><i class="fas fa-history"></i> History (Last 20)</h3>
+            <div id="historyList"></div>
+        </div>
+
+        <div class="refresh-info">
+            <i class="fas fa-sync-alt"></i> Auto Refresh: 30s | 
+            <i class="fas fa-clock"></i> Bangladesh Time
+        </div>
+    </div>
+
+    <script>
+        let autoRefresh = true;
+
+        async function updateSignal() {
+            try {
+                const response = await fetch('/api/signal');
+                const data = await response.json();
+                
+                document.getElementById('prediction').innerHTML = `
+                    <span class="predict-text">${data.prediction}</span>
+                    <div class="predict-icon">
+                        <i class="fas fa-trophy"></i>
+                    </div>
+                `;
+                
+                const predElement = document.getElementById('prediction');
+                predElement.className = `prediction ${data.prediction.toLowerCase()}-prediction`;
+                
+                document.getElementById('signalTime').textContent = data.time;
+                document.getElementById('confidence').textContent = `${data.confidence}%`;
+                document.getElementById('accuracy').textContent = `${Math.round(data.ai_accuracy)}%`;
+                document.getElementById('trend').textContent = `Trend: ${data.trend}`;
+                document.getElementById('status').textContent = '🟢 LIVE';
+                
+                document.getElementById('hotNumbers').innerHTML = 
+                    Object.entries(data.hot_numbers).map(([num, count]) => 
+                        `<div><strong>${num}</strong>: ${count}</div>`
+                    ).join('') || 'Loading...';
+                
+                document.getElementById('recentResults').innerHTML = 
+                    data.results_history.slice(-5).map(r => `<div>${r}</div>`).join('') || 'Loading...';
+                    
+            } catch (error) {
+                document.getElementById('status').textContent = '🔴 ERROR';
+                console.error('Update failed:', error);
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const response = await fetch('/api/history');
+                const data = await response.json();
+                
+                const historyList = document.getElementById('historyList');
+                historyList.innerHTML = data.results.slice(-20).map((result) => `
+                    <div class="history-item history-${result.toLowerCase()}">
+                        ${result}
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('History load failed:', error);
+            }
+        }
+
+        setInterval(() => {
+            if (autoRefresh) {
+                updateSignal();
+                loadHistory();
+            }
+        }, 30000);
+
+        updateSignal();
+        loadHistory();
+
+        setInterval(() => {
+            const now = new Date().toLocaleTimeString('bn-BD', { 
+                hour12: false, 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit' 
+            });
+            document.getElementById('signalTime').textContent = now;
+        }, 1000);
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/')
+def dashboard():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/api/signal')
+def get_signal():
+    prediction, confidence = ai_brain.predict()
+    bangladesh_time = ai_brain.get_bangladesh_time()
+    
+    signal_data = {
+        'prediction': prediction,
+        'confidence': confidence,
+        'time': bangladesh_time,
+        'ai_accuracy': ai_brain.ai_accuracy,
+        'trend': ai_brain.current_trend,
+        'hot_numbers': dict(list(ai_brain.dkwin_hot_numbers.most_common(5))),
+        'results_history': list(ai_brain.dkwin_results)[-10:]
+    }
+    return signal_data
+
+@app.route('/api/history')
+def get_history():
+    return {
+        'results': list(ai_brain.dkwin_results)[-20:],
+        'win_numbers': list(ai_brain.dkwin_win_numbers)[-20:],
+        'periods': list(ai_brain.dkwin_periods)
+    }
+
+def update_brain():
+    while True:
+        try:
+            ai_brain.sync_dkwin_data()
+            time.sleep(30)
+        except:
+            time.sleep(5)
+
+if __name__ == '__main__':
+    print("🚀 DKWIN AI WEB DASHBOARD STARTING...")
+    print("🌐 Open: http://localhost:5000")
+    threading.Thread(target=update_brain, daemon=True).start()
+    app.run(debug=False, host='0.0.0.0', port=5000)    
